@@ -183,4 +183,30 @@ temp/
 tmp/
 images_slides/
 tasks/
-progress_logs/
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.backup
+*.tfplan
+terraform/.terraform/
+override.tf
+override.tf.json
+
+# Ansible
+*.retry
+ansible/inventory/hosts
+
+# Docker
+docker-compose.override.yml
+
+# Kubernetes / AWS
+kubeconfig
+*.pem
+*.key
+.kube/
+
+# OS
+.DS_Store
+Thumbs.db
