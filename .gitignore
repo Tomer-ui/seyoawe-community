@@ -185,6 +185,7 @@ temp/
 tmp/
 images_slides/
 tasks/
+progress_logs/
 
 # Terraform
 .terraform/
