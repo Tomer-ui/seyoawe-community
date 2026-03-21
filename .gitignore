@@ -175,3 +175,12 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+
+# Misc
+.cache/
+temp/
+tmp/
+images_slides/
+tasks/
+progress_logs/
