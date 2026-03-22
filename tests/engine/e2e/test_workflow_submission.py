@@ -2,6 +2,9 @@
 E2E tests — Workflow submission against a live engine.
 Simulates a real user triggering a workflow via the API.
 Requires the engine container to be running.
+
+Endpoint confirmed from sawectl.py line 379:
+  POST /api/adhoc  with body {"workflow": <workflow_object>}
 """
 import os
 import requests
@@ -9,18 +12,20 @@ import pytest
 
 ENGINE_URL = os.environ.get("ENGINE_URL", "http://localhost:8080")
 
+# Minimal valid workflow payload — matches the structure sawectl sends
 SAMPLE_WORKFLOW_TRIGGER = {
-    "workflow": "run_pwd_and_notify",
-    "context": {
-        "channel": "#ci-test"
+    "workflow": {
+        "name": "ci-test-workflow",
+        "trigger": {"type": "ad-hoc"},
+        "steps": []
     }
 }
 
 
 def test_workflow_endpoint_is_reachable():
-    """The /workflow/trigger endpoint must exist and accept POST requests."""
+    """The /api/adhoc endpoint must exist and accept POST requests."""
     response = requests.post(
-        f"{ENGINE_URL}/workflow/trigger",
+        f"{ENGINE_URL}/api/adhoc",
         json=SAMPLE_WORKFLOW_TRIGGER,
         timeout=10
     )
@@ -37,7 +42,7 @@ def test_workflow_endpoint_is_reachable():
 def test_workflow_response_is_json():
     """Engine must respond with valid JSON on workflow trigger."""
     response = requests.post(
-        f"{ENGINE_URL}/workflow/trigger",
+        f"{ENGINE_URL}/api/adhoc",
         json=SAMPLE_WORKFLOW_TRIGGER,
         timeout=10
     )
