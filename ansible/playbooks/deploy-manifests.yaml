@@ -1,0 +1,107 @@
+---
+# deploy-manifests.yaml
+#
+# Runs on the CD runner (localhost) after configure-nodes.yaml.
+# Assumes kubeconfig is already pointing at the EKS cluster.
+#
+# What this playbook does:
+#   1. Installs the nginx ingress controller (needed for ingress.yaml to work)
+#   2. Substitutes __DOCKERHUB_USERNAME__ and __VERSION__ placeholders in manifests
+#   3. Applies all k8s/ manifests in dependency order
+#   4. Waits for the engine to become ready
+#   5. Prints the external URL
+
+- name: Deploy seyoawe manifests to EKS
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    repo_root: "{{ playbook_dir }}/../.."
+    # Read from environment variables set by the CD pipeline
+    dockerhub_username: "{{ lookup('env', 'DOCKERHUB_USERNAME') }}"
+    version: "{{ lookup('env', 'VERSION') }}"
+
+  tasks:
+
+    # ── 1. nginx ingress controller ──────────────────────────────────────────
+    # The nginx controller watches for Ingress resources and programs an AWS
+    # Network Load Balancer to route external traffic into the cluster.
+    # Without this, ingress.yaml applies cleanly but does absolutely nothing.
+    - name: Install nginx ingress controller
+      ansible.builtin.command:
+        cmd: >
+          kubectl apply -f
+          https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.3/deploy/static/provider/aws/deploy.yaml
+      changed_when: true
+
+    - name: Wait for nginx ingress controller pod to be Ready
+      ansible.builtin.command:
+        cmd: >
+          kubectl wait --namespace ingress-nginx
+          --for=condition=Ready pod
+          --selector=app.kubernetes.io/component=controller
+          --timeout=120s
+      changed_when: false
+
+    # ── 2. PVC ───────────────────────────────────────────────────────────────
+    # Must exist before the StatefulSet tries to mount it — order matters here.
+    - name: Apply engine PVC
+      ansible.builtin.command:
+        cmd: kubectl apply -f {{ repo_root }}/k8s/engine-pvc.yaml
+      changed_when: true
+
+    # ── 3. Engine StatefulSet ────────────────────────────────────────────────
+    # sed replaces __DOCKERHUB_USERNAME__ and __VERSION__ placeholders before
+    # the manifest reaches kubectl. The real values come from the CD environment.
+    - name: Apply engine StatefulSet
+      ansible.builtin.shell: |
+        sed -e "s|__DOCKERHUB_USERNAME__|{{ dockerhub_username }}|g" \
+            -e "s|__VERSION__|{{ version }}|g" \
+            {{ repo_root }}/k8s/engine-statefulset.yaml | kubectl apply -f -
+      changed_when: true
+
+    # ── 4. CLI Deployment ────────────────────────────────────────────────────
+    - name: Apply CLI Deployment
+      ansible.builtin.shell: |
+        sed -e "s|__DOCKERHUB_USERNAME__|{{ dockerhub_username }}|g" \
+            -e "s|__VERSION__|{{ version }}|g" \
+            {{ repo_root }}/k8s/cli-deployment.yaml | kubectl apply -f -
+      changed_when: true
+
+    # ── 5. Services ──────────────────────────────────────────────────────────
+    - name: Apply engine Service
+      ansible.builtin.command:
+        cmd: kubectl apply -f {{ repo_root }}/k8s/engine-service.yaml
+      changed_when: true
+
+    - name: Apply CLI Service
+      ansible.builtin.command:
+        cmd: kubectl apply -f {{ repo_root }}/k8s/cli-service.yaml
+      changed_when: true
+
+    # ── 6. Ingress ───────────────────────────────────────────────────────────
+    # Applied last — the nginx controller must be ready to pick it up.
+    - name: Apply Ingress
+      ansible.builtin.command:
+        cmd: kubectl apply -f {{ repo_root }}/k8s/ingress.yaml
+      changed_when: true
+
+    # ── 7. Wait for engine ───────────────────────────────────────────────────
+    # Blocks until the StatefulSet's pod reports Ready (or times out at 5 min).
+    # If the engine fails to start, this is where the CD job will surface it.
+    - name: Wait for engine StatefulSet to roll out
+      ansible.builtin.command:
+        cmd: kubectl rollout status statefulset/seyoawe-engine --timeout=300s
+      changed_when: false
+
+    # ── 8. Print external URL ────────────────────────────────────────────────
+    - name: Get ingress external hostname
+      ansible.builtin.command:
+        cmd: kubectl get ingress seyoawe-ingress -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+      changed_when: false
+      register: ingress_hostname
+
+    - name: Print engine URL
+      ansible.builtin.debug:
+        msg: "Engine is reachable at: http://{{ ingress_hostname.stdout }}/poll"

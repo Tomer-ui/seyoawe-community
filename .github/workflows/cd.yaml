@@ -1,0 +1,158 @@
+name: CD
+
+# Triggered by the CI pipeline's version-and-release job after both images
+# are pushed to Docker Hub. The version input carries the new tag (e.g. v0.0.2).
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to deploy (e.g. v0.0.2)"
+        required: true
+        type: string
+
+jobs:
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Single job: provision → configure → deploy → destroy
+  #
+  # Why one job? Terraform state lives on the runner. If apply and destroy are
+  # in separate jobs, the state file is lost between them. One job keeps it
+  # alive for the full run — this is the right pattern for spin-up/destroy.
+  # ─────────────────────────────────────────────────────────────────────────
+  deploy-and-destroy:
+    name: "Provision → Deploy → Destroy"
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION:    ${{ secrets.AWS_DEFAULT_REGION }}
+      DOCKERHUB_USERNAME:    ${{ secrets.DOCKERHUB_USERNAME }}
+      VERSION:               ${{ inputs.version }}
+      TF_IN_AUTOMATION:      "1"   # suppresses Terraform's interactive prompts
+
+    steps:
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── Tool setup ──────────────────────────────────────────────────────────
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Install Ansible
+        run: pip install ansible
+
+      # ── Terraform: provision the VPC + EKS cluster ──────────────────────────
+
+      - name: Terraform init
+        working-directory: terraform
+        run: terraform init
+
+      # plan writes a binary plan file; apply reads it — guarantees apply does
+      # exactly what plan showed, with no drift between the two steps.
+      - name: Terraform plan
+        working-directory: terraform
+        run: terraform plan -out=tfplan
+
+      - name: Terraform apply
+        working-directory: terraform
+        run: terraform apply -auto-approve tfplan
+
+      # ── Ansible: configure the cluster ──────────────────────────────────────
+      # configure-nodes.yaml: updates kubeconfig, waits for nodes Ready,
+      # applies the gp3 StorageClass.
+
+      - name: Configure EKS cluster nodes
+        working-directory: ansible
+        run: ansible-playbook playbooks/configure-nodes.yaml
+
+      # ── Ansible: deploy the app ──────────────────────────────────────────────
+      # deploy-manifests.yaml: installs nginx ingress controller, substitutes
+      # image placeholders, applies all 6 k8s/ manifests, waits for engine Ready.
+      # DOCKERHUB_USERNAME and VERSION are read from the job env by Ansible's
+      # lookup('env', ...) calls in the playbook vars block.
+
+      - name: Deploy manifests to EKS
+        working-directory: ansible
+        run: ansible-playbook playbooks/deploy-manifests.yaml
+
+      # ── Success notification ─────────────────────────────────────────────────
+      # Fires only if every step above passed. Placed before destroy so it
+      # reflects the deploy outcome, not the cleanup outcome.
+
+      - name: Notify Slack — deploy succeeded
+        if: success()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg text "✅ *CD deploy succeeded*  version: \`${VERSION}\`\nRun: ${RUN_URL}" \
+            '{"blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": $text}}]}')
+          curl -sf -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
+
+      # ── Terraform destroy (always runs) ──────────────────────────────────────
+      # Runs even if deploy failed — we never leave a live EKS cluster behind.
+      # The local tfstate from apply is still on the runner at this point, so
+      # destroy knows exactly what to remove.
+
+      - name: Terraform destroy
+        if: always()
+        working-directory: terraform
+        run: terraform destroy -auto-approve
+
+      # ── Failure notifications ────────────────────────────────────────────────
+      # if: failure() is true if any step in this job failed.
+
+      - name: Notify Slack — CD failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg text "❌ *CD pipeline failed*  version: \`${VERSION}\`\nRun: ${RUN_URL}" \
+            '{"blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": $text}}]}')
+          curl -sf -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
+
+      - name: Create Jira bug — CD failure
+        if: failure()
+        env:
+          JIRA_API_TOKEN:   ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_USER_EMAIL:  ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_BASE_URL:    ${{ secrets.JIRA_BASE_URL }}
+          JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg project "$JIRA_PROJECT_KEY" \
+            --arg summary "CD failure: deploy of ${VERSION} failed" \
+            --arg description "CD pipeline failed for version ${VERSION}.\n\nRun: ${RUN_URL}" \
+            '{
+              "fields": {
+                "project": {"key": $project},
+                "summary": $summary,
+                "description": {
+                  "type": "doc",
+                  "version": 1,
+                  "content": [{
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": $description}]
+                  }]
+                },
+                "issuetype": {"name": "Bug"}
+              }
+            }')
+          AUTH=$(echo -n "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" | base64 -w0)
+          curl -sf -X POST \
+            -H "Authorization: Basic ${AUTH}" \
+            -H "Content-Type: application/json" \
+            --data "$PAYLOAD" \
+            "${JIRA_BASE_URL}/rest/api/3/issue"

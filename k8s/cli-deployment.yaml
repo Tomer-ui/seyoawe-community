@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seyoawe-cli
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: seyoawe-cli
+  template:
+    metadata:
+      labels:
+        app: seyoawe-cli
+    spec:
+      containers:
+        - name: cli
+          # __DOCKERHUB_USERNAME__ and __VERSION__ are replaced by the CD pipeline
+          # using envsubst before kubectl apply is run.
+          image: __DOCKERHUB_USERNAME__/seyoawe-cli:__VERSION__
+
+          # The CLI entrypoint (python sawectl.py) exits immediately without arguments.
+          # We override it with sleep so the pod stays running. To actually run a
+          # CLI command: kubectl exec -it <pod> -- python sawectl.py <args>
+          command: ["sleep", "infinity"]
+
+          env:
+            - name: ENGINE_URL
+              value: "http://seyoawe-engine:8080"    # resolves via cluster DNS

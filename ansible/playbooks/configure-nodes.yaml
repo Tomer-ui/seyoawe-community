@@ -1,0 +1,85 @@
+---
+# configure-nodes.yaml
+#
+# Runs on the CD runner (localhost) after Terraform creates the EKS cluster.
+# EKS managed nodes don't accept direct SSH — all configuration happens through
+# the Kubernetes API via kubectl.
+#
+# What this playbook does:
+#   1. Configures kubectl so it can talk to the new cluster
+#   2. Waits for both worker nodes to reach Ready state
+#   3. Applies a gp3 StorageClass (needed by the engine PVC in Step 15)
+
+- name: Configure EKS cluster post-provision
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    cluster_name: "seyoawe-cluster"
+    region: "us-east-2"
+
+  tasks:
+
+    # ── 1. kubeconfig ────────────────────────────────────────────────────────
+    # Writes (or updates) ~/.kube/config on the runner so every subsequent
+    # kubectl call knows which cluster to target.
+    - name: Update kubeconfig for EKS cluster
+      ansible.builtin.command:
+        cmd: "aws eks update-kubeconfig --region {{ region }} --name {{ cluster_name }}"
+      changed_when: true
+
+    # ── 2. Wait for nodes ────────────────────────────────────────────────────
+    # Terraform finishes as soon as the node group resource is created, but the
+    # nodes themselves still need a minute or two to bootstrap and join the cluster.
+    # This task blocks until all nodes report Ready (or times out at 5 min).
+    - name: Wait for all nodes to be Ready
+      ansible.builtin.command:
+        cmd: kubectl wait --for=condition=Ready nodes --all --timeout=300s
+      changed_when: false
+
+    # ── 3. gp3 StorageClass ──────────────────────────────────────────────────
+    # EKS clusters come with a gp2 StorageClass by default. We apply our own
+    # gp3 class and mark it as the cluster default so any PVC that doesn't
+    # specify a storageClassName automatically gets a gp3 volume.
+    #
+    # ebs.csi.aws.com is the CSI driver that EKS 1.23+ ships pre-installed.
+    # WaitForFirstConsumer means the volume is only provisioned when a pod
+    # actually gets scheduled — avoids cross-AZ placement mismatches.
+    - name: Apply gp3 StorageClass
+      ansible.builtin.shell: |
+        kubectl apply -f - <<'EOF'
+        apiVersion: storage.k8s.io/v1
+        kind: StorageClass
+        metadata:
+          name: gp3
+          annotations:
+            storageclass.kubernetes.io/is-default-class: "true"
+        provisioner: ebs.csi.aws.com
+        parameters:
+          type: gp3
+        reclaimPolicy: Delete
+        volumeBindingMode: WaitForFirstConsumer
+        EOF
+      changed_when: true
+
+    # ── 4. Verify ────────────────────────────────────────────────────────────
+    - name: Show node status
+      ansible.builtin.command:
+        cmd: kubectl get nodes -o wide
+      changed_when: false
+      register: node_status
+
+    - name: Print node status
+      ansible.builtin.debug:
+        msg: "{{ node_status.stdout_lines }}"
+
+    - name: Show StorageClasses
+      ansible.builtin.command:
+        cmd: kubectl get storageclass
+      changed_when: false
+      register: sc_status
+
+    - name: Print StorageClasses
+      ansible.builtin.debug:
+        msg: "{{ sc_status.stdout_lines }}"

@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: seyoawe-engine
+  namespace: default
+spec:
+  serviceName: seyoawe-engine
+  replicas: 1
+  selector:
+    matchLabels:
+      app: seyoawe-engine
+  template:
+    metadata:
+      labels:
+        app: seyoawe-engine
+    spec:
+      containers:
+        - name: engine
+          # __DOCKERHUB_USERNAME__ and __VERSION__ are replaced by the CD pipeline
+          # using envsubst before kubectl apply is run.
+          image: __DOCKERHUB_USERNAME__/seyoawe-engine:__VERSION__
+          ports:
+            - containerPort: 8080
+
+          volumeMounts:
+            - name: progress-logs
+              mountPath: /app/progress_logs    # engine writes logs here; persisted across pod restarts
+
+          # /poll is the only endpoint the engine reliably responds to (see CI bug notes).
+          # initialDelaySeconds gives the binary time to start before Kubernetes starts checking.
+          livenessProbe:
+            httpGet:
+              path: /poll
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /poll
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+
+      volumes:
+        - name: progress-logs
+          persistentVolumeClaim:
+            claimName: engine-progress-logs

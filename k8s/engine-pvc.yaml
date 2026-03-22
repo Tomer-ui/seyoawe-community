@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: engine-progress-logs
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3        # matches the StorageClass applied by configure-nodes.yaml
+  resources:
+    requests:
+      storage: 1Gi

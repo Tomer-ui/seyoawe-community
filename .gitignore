@@ -199,7 +199,6 @@ override.tf.json
 
 # Ansible
 *.retry
-ansible/inventory/hosts
 
 # Docker
 docker-compose.override.yml
@@ -213,3 +212,6 @@ kubeconfig
 # OS
 .DS_Store
 Thumbs.db
+
+# Claude Code
+.claude/
