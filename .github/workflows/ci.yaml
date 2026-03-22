@@ -30,13 +30,14 @@ jobs:
       - name: Run unit tests
         run: pytest tests/engine/unit/ -v
 
-      # Start the engine container so integration + e2e tests can hit it
+      # Start the engine container so integration + e2e tests can hit it.
+      # We probe /poll — the engine resets connections on unknown routes like /
       - name: Start engine container
         run: |
           docker run -d --name engine -p 8080:8080 seyoawe-engine:ci
           echo "Waiting for engine to be ready..."
           for i in $(seq 1 30); do
-            STATUS=$(curl -s --max-time 2 -o /dev/null -w "%{http_code}" http://localhost:8080 || echo "000")
+            STATUS=$(curl -s --max-time 2 -o /dev/null -w "%{http_code}" http://localhost:8080/poll || echo "000")
             if [ "$STATUS" != "000" ]; then
               echo "Engine is up (HTTP $STATUS)"
               break
@@ -170,7 +171,7 @@ jobs:
           docker run -d --name engine -p 8080:8080 seyoawe-engine:ci
           echo "Waiting for engine to be ready..."
           for i in $(seq 1 30); do
-            STATUS=$(curl -s --max-time 2 -o /dev/null -w "%{http_code}" http://localhost:8080 || echo "000")
+            STATUS=$(curl -s --max-time 2 -o /dev/null -w "%{http_code}" http://localhost:8080/poll || echo "000")
             if [ "$STATUS" != "000" ]; then
               echo "Engine is up (HTTP $STATUS)"
               break
