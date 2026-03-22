@@ -127,32 +127,6 @@ resource "aws_iam_role_policy_attachment" "eks_ecr_read_only" {
 }
 
 # ─────────────────────────────────────────
-# Launch Template — gp3 root volume
-# ─────────────────────────────────────────
-
-# Using a launch template is the only way to explicitly set the root volume
-# type to gp3. Without this, older EKS AMIs default to gp2.
-resource "aws_launch_template" "nodes" {
-  name_prefix = "${var.cluster_name}-nodes-"
-
-  block_device_mappings {
-    device_name = "/dev/xvda"
-    ebs {
-      volume_size           = 20
-      volume_type           = "gp3"
-      delete_on_termination = true
-    }
-  }
-
-  tag_specifications {
-    resource_type = "instance"
-    tags = {
-      Name = "${var.cluster_name}-node"
-    }
-  }
-}
-
-# ─────────────────────────────────────────
 # EKS Cluster
 # ─────────────────────────────────────────
 
@@ -189,11 +163,6 @@ resource "aws_eks_node_group" "main" {
     desired_size = var.node_count
     min_size     = 1
     max_size     = var.node_count
-  }
-
-  launch_template {
-    id      = aws_launch_template.nodes.id
-    version = aws_launch_template.nodes.latest_version
   }
 
   depends_on = [
