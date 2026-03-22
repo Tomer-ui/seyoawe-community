@@ -1,0 +1,348 @@
+name: CI
+
+# Runs on every push to any branch, and on pull requests.
+on:
+  push:
+  pull_request:
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Job 1: Engine — build the image and run all three test tiers
+  # ---------------------------------------------------------------------------
+  engine-ci:
+    name: "Engine — Build & Test"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Build the engine Docker image from the repo root context
+      - name: Build engine image
+        run: docker build -t seyoawe-engine:ci -f engine/Dockerfile .
+
+      # Install Python test deps on the runner (needed to run pytest)
+      - name: Install test dependencies
+        run: pip install -r tests/engine/requirements.txt
+
+      # Unit tests don't need a running container — run them first (fast feedback)
+      - name: Run unit tests
+        run: pytest tests/engine/unit/ -v
+
+      # Start the engine container so integration + e2e tests can hit it
+      - name: Start engine container
+        run: |
+          docker run -d --name engine -p 8080:8080 seyoawe-engine:ci
+          echo "Waiting for engine to be ready..."
+          for i in $(seq 1 30); do
+            STATUS=$(curl -s --max-time 2 -o /dev/null -w "%{http_code}" http://localhost:8080 || echo "000")
+            if [ "$STATUS" != "000" ]; then
+              echo "Engine is up (HTTP $STATUS)"
+              break
+            fi
+            echo "  attempt $i/30..."
+            sleep 1
+          done
+          if [ "$STATUS" = "000" ]; then
+            echo "Engine did not start within 30 seconds"
+            docker logs engine
+            exit 1
+          fi
+
+      - name: Run integration tests
+        env:
+          ENGINE_URL: http://localhost:8080
+        run: pytest tests/engine/integration/ -v
+
+      - name: Run E2E tests
+        env:
+          ENGINE_URL: http://localhost:8080
+        run: pytest tests/engine/e2e/ -v
+
+      # ---- Failure handling ------------------------------------------------
+
+      # Grab the last 100 lines of container logs before notifying
+      - name: Collect engine container logs
+        if: failure()
+        run: docker logs engine 2>&1 | tail -100 > /tmp/engine-logs.txt || true
+
+      - name: Notify Slack — Engine failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          LOGS=$(cat /tmp/engine-logs.txt 2>/dev/null | tail -30 || echo "no logs available")
+          PAYLOAD=$(jq -n \
+            --arg text "❌ *Engine CI failed*  branch: \`${BRANCH}\`  commit: \`${SHA:0:7}\`\nRun: ${RUN_URL}" \
+            --arg logs "$LOGS" \
+            '{"blocks": [
+              {"type": "section", "text": {"type": "mrkdwn", "text": $text}},
+              {"type": "section", "text": {"type": "mrkdwn", "text": ("```" + $logs + "```")}}
+            ]}')
+          curl -sf -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
+
+      - name: Create Jira bug — Engine failure
+        if: failure()
+        env:
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg project "$JIRA_PROJECT_KEY" \
+            --arg summary "CI failure: Engine tests failed on ${BRANCH} (${SHA:0:7})" \
+            --arg description "Engine CI pipeline failed.\n\nBranch: ${BRANCH}\nCommit: ${SHA}\nRun: ${RUN_URL}" \
+            '{
+              "fields": {
+                "project": {"key": $project},
+                "summary": $summary,
+                "description": {
+                  "type": "doc",
+                  "version": 1,
+                  "content": [{
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": $description}]
+                  }]
+                },
+                "issuetype": {"name": "Bug"}
+              }
+            }')
+          AUTH=$(echo -n "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" | base64 -w0)
+          curl -sf -X POST \
+            -H "Authorization: Basic ${AUTH}" \
+            -H "Content-Type: application/json" \
+            --data "$PAYLOAD" \
+            "${JIRA_BASE_URL}/rest/api/3/issue"
+
+      # Always stop and remove the container — even if tests failed
+      - name: Stop engine container
+        if: always()
+        run: docker stop engine && docker rm engine || true
+
+
+  # ---------------------------------------------------------------------------
+  # Job 2: CLI — build the image and run all three test tiers
+  # ---------------------------------------------------------------------------
+  cli-ci:
+    name: "CLI — Build & Test"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Build the CLI Docker image and do a quick smoke-test
+      - name: Build CLI image
+        run: docker build -t seyoawe-cli:ci -f cli/Dockerfile .
+
+      - name: Verify CLI image runs
+        run: docker run --rm seyoawe-cli:ci --help
+
+      # CLI tests use sys.executable to call sawectl.py directly on the runner,
+      # so we need sawectl's own Python deps installed on the runner too.
+      - name: Install sawectl runtime dependencies
+        run: pip install -r sawectl/requirements.txt
+
+      - name: Install test dependencies
+        run: pip install -r tests/cli/requirements.txt
+
+      # Unit + integration tests run sawectl.py as a subprocess — no container needed
+      - name: Run unit tests
+        run: pytest tests/cli/unit/ -v
+
+      - name: Run integration tests
+        run: pytest tests/cli/integration/ -v
+
+      # E2E tests require the engine to be running — build it here and start it
+      - name: Build engine image (needed for E2E)
+        run: docker build -t seyoawe-engine:ci -f engine/Dockerfile .
+
+      - name: Start engine container (for E2E)
+        run: |
+          docker run -d --name engine -p 8080:8080 seyoawe-engine:ci
+          echo "Waiting for engine to be ready..."
+          for i in $(seq 1 30); do
+            STATUS=$(curl -s --max-time 2 -o /dev/null -w "%{http_code}" http://localhost:8080 || echo "000")
+            if [ "$STATUS" != "000" ]; then
+              echo "Engine is up (HTTP $STATUS)"
+              break
+            fi
+            echo "  attempt $i/30..."
+            sleep 1
+          done
+          if [ "$STATUS" = "000" ]; then
+            echo "Engine did not start within 30 seconds"
+            docker logs engine
+            exit 1
+          fi
+
+      # ENGINE_URL is intentionally not set here — the CLI e2e test defaults to
+      # "localhost:8080" (no http:// prefix) which is what sawectl --server expects
+      - name: Run E2E tests
+        run: pytest tests/cli/e2e/ -v
+
+      # ---- Failure handling ------------------------------------------------
+
+      - name: Collect engine container logs
+        if: failure()
+        run: docker logs engine 2>&1 | tail -100 > /tmp/engine-logs.txt || true
+
+      - name: Notify Slack — CLI failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          LOGS=$(cat /tmp/engine-logs.txt 2>/dev/null | tail -30 || echo "no logs available")
+          PAYLOAD=$(jq -n \
+            --arg text "❌ *CLI CI failed*  branch: \`${BRANCH}\`  commit: \`${SHA:0:7}\`\nRun: ${RUN_URL}" \
+            --arg logs "$LOGS" \
+            '{"blocks": [
+              {"type": "section", "text": {"type": "mrkdwn", "text": $text}},
+              {"type": "section", "text": {"type": "mrkdwn", "text": ("```" + $logs + "```")}}
+            ]}')
+          curl -sf -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
+
+      - name: Create Jira bug — CLI failure
+        if: failure()
+        env:
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg project "$JIRA_PROJECT_KEY" \
+            --arg summary "CI failure: CLI tests failed on ${BRANCH} (${SHA:0:7})" \
+            --arg description "CLI CI pipeline failed.\n\nBranch: ${BRANCH}\nCommit: ${SHA}\nRun: ${RUN_URL}" \
+            '{
+              "fields": {
+                "project": {"key": $project},
+                "summary": $summary,
+                "description": {
+                  "type": "doc",
+                  "version": 1,
+                  "content": [{
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": $description}]
+                  }]
+                },
+                "issuetype": {"name": "Bug"}
+              }
+            }')
+          AUTH=$(echo -n "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" | base64 -w0)
+          curl -sf -X POST \
+            -H "Authorization: Basic ${AUTH}" \
+            -H "Content-Type: application/json" \
+            --data "$PAYLOAD" \
+            "${JIRA_BASE_URL}/rest/api/3/issue"
+
+      - name: Stop engine container
+        if: always()
+        run: docker stop engine && docker rm engine || true
+
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Version, Release & Push
+  # Runs only when both CI jobs pass AND we are on the main branch.
+  # ---------------------------------------------------------------------------
+  version-and-release:
+    name: "Version, Release & Push"
+    runs-on: ubuntu-latest
+    needs: [engine-ci, cli-ci]
+    if: success() && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write   # needed to create tags and GitHub releases
+      actions: write    # needed to trigger the CD workflow
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # must fetch full history so git tags are visible
+
+      # Read the latest git tag and bump the patch number.
+      # If no tag exists yet, we start at v0.1.0.
+      - name: Compute next semantic version
+        id: version
+        run: |
+          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Latest tag: $LATEST"
+          MAJOR=$(echo "$LATEST" | sed 's/v//' | cut -d. -f1)
+          MINOR=$(echo "$LATEST" | sed 's/v//' | cut -d. -f2)
+          PATCH=$(echo "$LATEST" | sed 's/v//' | cut -d. -f3)
+          PATCH=$((PATCH + 1))
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "New version: $NEW_TAG"
+          echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
+
+      # Rebuild both images fresh — these are the images that go to Docker Hub
+      - name: Build engine image for release
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          docker build -t seyoawe-engine:$TAG -f engine/Dockerfile .
+
+      - name: Build CLI image for release
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          docker build -t seyoawe-cli:$TAG -f cli/Dockerfile .
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push engine image to Docker Hub
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          REPO="${{ secrets.DOCKERHUB_USERNAME }}/seyoawe-engine"
+          docker tag seyoawe-engine:$TAG $REPO:$TAG
+          docker tag seyoawe-engine:$TAG $REPO:latest
+          docker push $REPO:$TAG
+          docker push $REPO:latest
+
+      - name: Push CLI image to Docker Hub
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          REPO="${{ secrets.DOCKERHUB_USERNAME }}/seyoawe-cli"
+          docker tag seyoawe-cli:$TAG $REPO:$TAG
+          docker tag seyoawe-cli:$TAG $REPO:latest
+          docker push $REPO:$TAG
+          docker push $REPO:latest
+
+      # Create a git tag and a GitHub Release
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=${{ steps.version.outputs.tag }}
+          gh release create "$TAG" \
+            --title "Release $TAG" \
+            --notes "Automated release $TAG. Engine and CLI images pushed to Docker Hub." \
+            --latest
+
+      # Kick off the CD pipeline and pass it the new version tag.
+      # The || true ensures this step doesn't break CI if cd.yaml doesn't exist yet.
+      - name: Trigger CD pipeline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.tag }}
+        run: |
+          gh workflow run cd.yaml \
+            --ref main \
+            --field version="$VERSION" \
+          || echo "CD workflow not yet configured — skipping trigger"
