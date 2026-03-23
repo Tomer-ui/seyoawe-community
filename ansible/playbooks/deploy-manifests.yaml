@@ -94,6 +94,31 @@
       ansible.builtin.command:
         cmd: kubectl rollout status statefulset/seyoawe-engine --timeout=300s
       changed_when: false
+      register: rollout_result
+      ignore_errors: true
+
+    - name: Diagnose — PVC status
+      ansible.builtin.command:
+        cmd: kubectl get pvc -o wide
+      changed_when: false
+      ignore_errors: true
+
+    - name: Diagnose — pod status
+      ansible.builtin.command:
+        cmd: kubectl get pods -o wide
+      changed_when: false
+      ignore_errors: true
+
+    - name: Diagnose — engine pod events
+      ansible.builtin.command:
+        cmd: kubectl describe pod -l app=seyoawe-engine
+      changed_when: false
+      ignore_errors: true
+
+    - name: Fail if rollout timed out
+      ansible.builtin.fail:
+        msg: "Engine StatefulSet rollout failed — see diagnostics above"
+      when: rollout_result.rc != 0
 
     # ── 8. Print external URL ────────────────────────────────────────────────
     - name: Get ingress external hostname
