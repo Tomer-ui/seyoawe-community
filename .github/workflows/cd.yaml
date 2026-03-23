@@ -98,6 +98,17 @@ jobs:
             '{"blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": $text}}]}')
           curl -sf -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
 
+      # ── Pre-destroy cleanup ───────────────────────────────────────────────────
+      # The nginx ingress controller creates an AWS Network Load Balancer that
+      # Terraform doesn't manage. If it still exists when Terraform tries to
+      # delete the VPC, the IGW hangs indefinitely waiting for the NLB to release.
+      # Deleting the ingress-nginx namespace first tears down the NLB cleanly.
+
+      - name: Delete nginx ingress controller (removes NLB before VPC teardown)
+        if: always()
+        run: |
+          kubectl delete namespace ingress-nginx --ignore-not-found --timeout=120s || true
+
       # ── Terraform destroy (always runs) ──────────────────────────────────────
       # Runs even if deploy failed — we never leave a live EKS cluster behind.
       # The local tfstate from apply is still on the runner at this point, so
