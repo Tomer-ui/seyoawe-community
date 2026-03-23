@@ -88,11 +88,12 @@
       changed_when: true
 
     # ── 7. Wait for engine ───────────────────────────────────────────────────
-    # Blocks until the StatefulSet's pod reports Ready (or times out at 5 min).
-    # If the engine fails to start, this is where the CD job will surface it.
+    # Blocks until the StatefulSet's pod reports Ready (or times out at 11 min).
+    # Timeout is 660s — slightly more than the startupProbe window (600s) so the
+    # probe wins the race and a pod restart is visible before we give up.
     - name: Wait for engine StatefulSet to roll out
       ansible.builtin.command:
-        cmd: kubectl rollout status statefulset/seyoawe-engine --timeout=300s
+        cmd: kubectl rollout status statefulset/seyoawe-engine --timeout=660s
       changed_when: false
       register: rollout_result
       ignore_errors: true
