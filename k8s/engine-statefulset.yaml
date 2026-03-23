@@ -24,7 +24,7 @@ spec:
 
           volumeMounts:
             - name: progress-logs
-              mountPath: /app/progress_logs    # engine writes logs here; persisted across pod restarts
+              mountPath: /app/seyoawe-community/logs    # matches config.yaml directories.logs; persisted across pod restarts
 
           # /poll is the only endpoint the engine reliably responds to (see CI bug notes).
           # The engine binary takes ~60s to warm up on t3.small — startupProbe gates

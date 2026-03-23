@@ -100,28 +100,37 @@ jobs:
 
       # ── Pre-destroy cleanup ───────────────────────────────────────────────────
       # The nginx ingress controller creates an AWS Network Load Balancer outside
-      # Terraform's state. Deleting the namespace triggers NLB deletion, but AWS
-      # takes several minutes to fully release the NLB's ENIs from the subnets.
-      # We poll until all ELB ENIs are gone — Terraform destroy will hang on subnet
-      # deletion otherwise.
+      # Terraform's state. We delete the namespace (which triggers NLB deletion
+      # via the cloud controller) then use `elbv2 wait load-balancer-deleted` to
+      # block until the NLB and its ENIs are fully gone. Without this, terraform
+      # destroy hangs on subnet deletion with DependencyViolation.
 
-      - name: Delete nginx ingress controller and wait for NLB ENIs to detach
+      - name: Delete nginx ingress controller and wait for NLB to be deleted
         if: always()
         working-directory: terraform
         run: |
-          kubectl delete namespace ingress-nginx --ignore-not-found --timeout=120s || true
+          # Deleting the namespace removes the LoadBalancer service, which tells the
+          # AWS cloud controller to delete the NLB. We then wait using the elbv2 API
+          # (polls until LB is fully deleted) before handing control to terraform
+          # destroy — otherwise the subnet deletion fails with DependencyViolation.
+          kubectl delete namespace ingress-nginx --ignore-not-found || true
 
           VPC_ID=$(terraform output -raw vpc_id 2>/dev/null || echo "")
           if [ -n "$VPC_ID" ]; then
-            echo "Waiting for NLB ENIs to detach from VPC $VPC_ID..."
-            for i in $(seq 1 24); do
-              ENI_COUNT=$(aws ec2 describe-network-interfaces \
-                --filters "Name=vpc-id,Values=$VPC_ID" "Name=description,Values=*ELB*" \
-                --query 'length(NetworkInterfaces)' --output text 2>/dev/null || echo "0")
-              echo "  Check $i/24: $ENI_COUNT ELB ENI(s) remaining"
-              [ "$ENI_COUNT" = "0" ] && break
-              sleep 15
-            done
+            echo "Looking for load balancers in VPC $VPC_ID..."
+            LB_ARNS=$(aws elbv2 describe-load-balancers \
+              --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" \
+              --output text 2>/dev/null || echo "")
+
+            if [ -n "$LB_ARNS" ] && [ "$LB_ARNS" != "None" ]; then
+              for ARN in $LB_ARNS; do
+                echo "Waiting for load balancer to be deleted: $ARN"
+                aws elbv2 wait load-balancer-deleted --load-balancer-arns "$ARN" \
+                  || echo "  Wait timed out for $ARN — proceeding anyway"
+              done
+            else
+              echo "No load balancers found in VPC $VPC_ID"
+            fi
           fi
 
       # ── Terraform destroy (always runs) ──────────────────────────────────────
