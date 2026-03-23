@@ -27,12 +27,19 @@ spec:
               mountPath: /app/progress_logs    # engine writes logs here; persisted across pod restarts
 
           # /poll is the only endpoint the engine reliably responds to (see CI bug notes).
-          # initialDelaySeconds gives the binary time to start before Kubernetes starts checking.
+          # The engine binary takes ~60s to warm up on t3.small — startupProbe gates
+          # the liveness/readiness probes until the first successful /poll response.
+          startupProbe:
+            httpGet:
+              path: /poll
+              port: 8080
+            failureThreshold: 30
+            periodSeconds: 10
+
           livenessProbe:
             httpGet:
               path: /poll
               port: 8080
-            initialDelaySeconds: 30
             periodSeconds: 15
             failureThreshold: 3
 
@@ -40,7 +47,6 @@ spec:
             httpGet:
               path: /poll
               port: 8080
-            initialDelaySeconds: 15
             periodSeconds: 10
             failureThreshold: 3
 
