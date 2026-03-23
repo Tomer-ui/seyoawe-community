@@ -99,15 +99,30 @@ jobs:
           curl -sf -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
 
       # ── Pre-destroy cleanup ───────────────────────────────────────────────────
-      # The nginx ingress controller creates an AWS Network Load Balancer that
-      # Terraform doesn't manage. If it still exists when Terraform tries to
-      # delete the VPC, the IGW hangs indefinitely waiting for the NLB to release.
-      # Deleting the ingress-nginx namespace first tears down the NLB cleanly.
+      # The nginx ingress controller creates an AWS Network Load Balancer outside
+      # Terraform's state. Deleting the namespace triggers NLB deletion, but AWS
+      # takes several minutes to fully release the NLB's ENIs from the subnets.
+      # We poll until all ELB ENIs are gone — Terraform destroy will hang on subnet
+      # deletion otherwise.
 
-      - name: Delete nginx ingress controller (removes NLB before VPC teardown)
+      - name: Delete nginx ingress controller and wait for NLB ENIs to detach
         if: always()
+        working-directory: terraform
         run: |
           kubectl delete namespace ingress-nginx --ignore-not-found --timeout=120s || true
+
+          VPC_ID=$(terraform output -raw vpc_id 2>/dev/null || echo "")
+          if [ -n "$VPC_ID" ]; then
+            echo "Waiting for NLB ENIs to detach from VPC $VPC_ID..."
+            for i in $(seq 1 24); do
+              ENI_COUNT=$(aws ec2 describe-network-interfaces \
+                --filters "Name=vpc-id,Values=$VPC_ID" "Name=description,Values=*ELB*" \
+                --query 'length(NetworkInterfaces)' --output text 2>/dev/null || echo "0")
+              echo "  Check $i/24: $ENI_COUNT ELB ENI(s) remaining"
+              [ "$ENI_COUNT" = "0" ] && break
+              sleep 15
+            done
+          fi
 
       # ── Terraform destroy (always runs) ──────────────────────────────────────
       # Runs even if deploy failed — we never leave a live EKS cluster behind.

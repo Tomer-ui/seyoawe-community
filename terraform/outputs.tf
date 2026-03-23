@@ -1,3 +1,8 @@
+output "vpc_id" {
+  description = "VPC ID — used by CD pre-destroy to wait for NLB ENIs to detach"
+  value       = aws_vpc.main.id
+}
+
 output "cluster_name" {
   description = "EKS cluster name"
   value       = aws_eks_cluster.main.name
