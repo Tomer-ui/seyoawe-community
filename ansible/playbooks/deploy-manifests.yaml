@@ -102,18 +102,33 @@
         cmd: kubectl get pvc -o wide
       changed_when: false
       ignore_errors: true
+      register: diag_pvc
+
+    - name: Print PVC status
+      ansible.builtin.debug:
+        msg: "{{ diag_pvc.stdout }}"
 
     - name: Diagnose — pod status
       ansible.builtin.command:
         cmd: kubectl get pods -o wide
       changed_when: false
       ignore_errors: true
+      register: diag_pods
+
+    - name: Print pod status
+      ansible.builtin.debug:
+        msg: "{{ diag_pods.stdout }}"
 
     - name: Diagnose — engine pod events
       ansible.builtin.command:
         cmd: kubectl describe pod -l app=seyoawe-engine
       changed_when: false
       ignore_errors: true
+      register: diag_events
+
+    - name: Print engine pod events
+      ansible.builtin.debug:
+        msg: "{{ diag_events.stdout }}"
 
     - name: Fail if rollout timed out
       ansible.builtin.fail:
