@@ -26,26 +26,24 @@ spec:
             - name: progress-logs
               mountPath: /app/seyoawe-community/logs    # matches config.yaml directories.logs; persisted across pod restarts
 
-          # /poll is the only endpoint the engine reliably responds to (see CI bug notes).
-          # The engine binary takes ~60s to warm up on t3.small — startupProbe gates
-          # the liveness/readiness probes until the first successful /poll response.
+          # The engine has no HTTP endpoint that returns 200 when idle (/poll returns
+          # 404 when there are no pending workflows). Use tcpSocket probes instead —
+          # they succeed as soon as the engine process is listening on port 8080,
+          # which is the correct signal that the engine is alive and ready.
           startupProbe:
-            httpGet:
-              path: /poll
+            tcpSocket:
               port: 8080
-            failureThreshold: 60
+            failureThreshold: 60   # 60 × 10s = 600s max startup window
             periodSeconds: 10
 
           livenessProbe:
-            httpGet:
-              path: /poll
+            tcpSocket:
               port: 8080
             periodSeconds: 15
             failureThreshold: 3
 
           readinessProbe:
-            httpGet:
-              path: /poll
+            tcpSocket:
               port: 8080
             periodSeconds: 10
             failureThreshold: 3
