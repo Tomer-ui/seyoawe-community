@@ -146,3 +146,72 @@
     - name: Print engine URL
       ansible.builtin.debug:
         msg: "Engine is reachable at: http://{{ ingress_hostname.stdout }}/poll"
+
+    # ── 9. Monitoring stack (Prometheus + Grafana) ─────────────────────────
+    # Deployed into a dedicated namespace on the tainted monitoring node.
+    # Order: namespace → RBAC → config → deployments → services.
+
+    - name: Apply monitoring namespace
+      ansible.builtin.command:
+        cmd: kubectl apply -f {{ repo_root }}/monitoring/namespace.yaml
+      changed_when: true
+
+    - name: Apply Prometheus RBAC
+      ansible.builtin.command:
+        cmd: kubectl apply -f {{ repo_root }}/monitoring/prometheus-rbac.yaml
+      changed_when: true
+
+    - name: Apply Prometheus config
+      ansible.builtin.command:
+        cmd: kubectl apply -f {{ repo_root }}/monitoring/prometheus-config.yaml
+      changed_when: true
+
+    - name: Apply Prometheus deployment
+      ansible.builtin.command:
+        cmd: kubectl apply -f {{ repo_root }}/monitoring/prometheus-deployment.yaml
+      changed_when: true
+
+    - name: Apply Prometheus service
+      ansible.builtin.command:
+        cmd: kubectl apply -f {{ repo_root }}/monitoring/prometheus-service.yaml
+      changed_when: true
+
+    - name: Apply Grafana config
+      ansible.builtin.command:
+        cmd: kubectl apply -f {{ repo_root }}/monitoring/grafana-config.yaml
+      changed_when: true
+
+    - name: Apply Grafana dashboard
+      ansible.builtin.command:
+        cmd: kubectl apply -f {{ repo_root }}/monitoring/grafana-dashboard.yaml
+      changed_when: true
+
+    - name: Apply Grafana deployment
+      ansible.builtin.command:
+        cmd: kubectl apply -f {{ repo_root }}/monitoring/grafana-deployment.yaml
+      changed_when: true
+
+    - name: Apply Grafana service
+      ansible.builtin.command:
+        cmd: kubectl apply -f {{ repo_root }}/monitoring/grafana-service.yaml
+      changed_when: true
+
+    - name: Wait for Prometheus to be ready
+      ansible.builtin.command:
+        cmd: kubectl rollout status deployment/prometheus -n monitoring --timeout=120s
+      changed_when: false
+
+    - name: Wait for Grafana to be ready
+      ansible.builtin.command:
+        cmd: kubectl rollout status deployment/grafana -n monitoring --timeout=120s
+      changed_when: false
+
+    - name: Show monitoring pods
+      ansible.builtin.command:
+        cmd: kubectl get pods -n monitoring -o wide
+      changed_when: false
+      register: monitoring_pods
+
+    - name: Print monitoring pod status
+      ansible.builtin.debug:
+        msg: "{{ monitoring_pods.stdout_lines }}"

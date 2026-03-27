@@ -1,0 +1,31 @@
+# Auto-provisioning config for Grafana.
+# These get mounted into Grafana's provisioning directories so it boots
+# with Prometheus already wired up and the dashboard pre-loaded — no
+# manual clicking needed.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-config
+  namespace: monitoring
+data:
+  # ── Datasource: tells Grafana where Prometheus lives ────────────────
+  datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+        editable: false
+
+  # ── Dashboard provider: tells Grafana to load JSON files from disk ──
+  dashboard-provider.yaml: |
+    apiVersion: 1
+    providers:
+      - name: "default"
+        folder: ""
+        type: file
+        disableDeletion: false
+        options:
+          path: /var/lib/grafana/dashboards

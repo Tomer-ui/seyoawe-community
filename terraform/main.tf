@@ -225,6 +225,44 @@ resource "aws_eks_node_group" "main" {
 }
 
 # ─────────────────────────────────────────
+# EKS Node Group — Monitoring (dedicated)
+# ─────────────────────────────────────────
+# Isolated node for Prometheus + Grafana.
+# Tainted so only pods that explicitly tolerate "role=monitoring" land here.
+# This mirrors the production pattern of separating observability from app workloads.
+
+resource "aws_eks_node_group" "monitoring" {
+  cluster_name    = aws_eks_cluster.main.name
+  node_group_name = "${var.cluster_name}-monitoring"
+  node_role_arn   = aws_iam_role.eks_nodes.arn
+
+  subnet_ids     = [aws_subnet.public[0].id]
+  instance_types = [var.node_instance_type]
+
+  scaling_config {
+    desired_size = 1
+    min_size     = 1
+    max_size     = 1
+  }
+
+  labels = {
+    role = "monitoring"
+  }
+
+  taint {
+    key    = "role"
+    value  = "monitoring"
+    effect = "NO_SCHEDULE"
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.eks_worker_node_policy,
+    aws_iam_role_policy_attachment.eks_cni_policy,
+    aws_iam_role_policy_attachment.eks_ecr_read_only,
+  ]
+}
+
+# ─────────────────────────────────────────
 # EBS CSI Driver Add-on
 # ─────────────────────────────────────────
 

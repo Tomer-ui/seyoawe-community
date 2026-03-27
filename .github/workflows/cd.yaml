@@ -188,6 +188,7 @@ jobs:
         working-directory: terraform
         run: |
           kubectl delete namespace ingress-nginx --ignore-not-found || true
+          kubectl delete namespace monitoring --ignore-not-found || true
 
           VPC_ID=$(terraform output -raw vpc_id 2>/dev/null || echo "")
           if [ -n "$VPC_ID" ]; then
