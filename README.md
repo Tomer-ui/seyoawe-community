@@ -247,3 +247,72 @@ SeyoAWE isn’t just another automation engine.
 It’s a human-aware, Git-native, modular platform for teams who need infinitley flexible, yet simple automation solution
 
 ---
+
+## DevOps Platform — CI/CD, Infrastructure & Monitoring
+
+### Repository Structure
+
+```
+.github/workflows/
+  ci.yaml              # CI: build, test, version, push to Docker Hub
+  cd.yaml              # CD: Terraform → Ansible → K8s deploy → destroy
+engine/Dockerfile       # Engine container (ubuntu:22.04 + seyoawe.linux binary)
+cli/Dockerfile          # CLI container (python:3.11-slim + sawectl.py)
+tests/
+  engine/              # Unit, integration, e2e tests for the engine
+  cli/                 # Unit, integration, e2e tests for the CLI
+terraform/             # VPC + EKS cluster + node groups (app + monitoring)
+ansible/
+  playbooks/
+    configure-nodes.yaml    # kubeconfig, StorageClass, node readiness
+    deploy-manifests.yaml   # App + monitoring deployment to EKS
+k8s/                   # Engine StatefulSet, CLI Deployment, Services, Ingress
+monitoring/            # Prometheus + Grafana on dedicated monitoring node
+```
+
+### CI Pipeline (ci.yaml)
+
+Triggered on every push. Two parallel jobs:
+
+1. **engine-ci** — build Docker image, run unit tests, start container, run integration + e2e tests
+2. **cli-ci** — build Docker image, run unit + integration tests, start engine, run e2e tests
+
+If either fails: Slack notification + Jira bug ticket created automatically.
+
+If both pass: **version-and-release** job bumps the semantic version, pushes both images to Docker Hub with matching tags, creates a GitHub Release, and triggers the CD pipeline.
+
+### CD Pipeline (cd.yaml)
+
+Three-job structure:
+
+1. **deploy** — `terraform apply` (VPC + EKS + monitoring node) then `ansible-playbook configure-nodes` then `ansible-playbook deploy-manifests` (app + monitoring)
+2. **teardown-gate** — manual approval button (GitHub Environment protection rule). Pauses so the live cluster can be inspected before destruction.
+3. **destroy** — cleans up ingress + monitoring namespaces then `terraform destroy`. Runs automatically on deploy failure (no approval needed).
+
+### Infrastructure (Terraform)
+
+- AWS VPC (10.0.0.0/16) with 2 public subnets across 2 AZs
+- EKS cluster (v1.31) with EBS CSI driver (OIDC/IRSA)
+- App node group: 2 x t3.small (single AZ for cost)
+- Monitoring node group: 1 x t3.small, tainted `role=monitoring:NoSchedule`
+
+### Kubernetes Architecture
+
+| Workload | Kind | Node | Purpose |
+|---|---|---|---|
+| seyoawe-engine | StatefulSet | app nodes | Runs the engine binary, PVC for logs |
+| seyoawe-cli | Deployment | app nodes | Stateless CLI utility |
+| prometheus | Deployment | monitoring node | Scrapes cluster metrics via cAdvisor |
+| grafana | Deployment | monitoring node | Dashboards (auto-provisioned) |
+
+External access via nginx ingress controller (AWS NLB).
+
+### Monitoring
+
+Prometheus scrapes container CPU/memory/network metrics from all nodes via cAdvisor. Grafana boots with a pre-provisioned "Seyoawe Cluster Overview" dashboard — no manual setup required.
+
+### GitHub Secrets Required
+
+`DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION`, `SLACK_WEBHOOK_URL`, `JIRA_API_TOKEN`, `JIRA_USER_EMAIL`, `JIRA_BASE_URL`, `JIRA_PROJECT_KEY`
+
+---
