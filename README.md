@@ -250,6 +250,42 @@ It’s a human-aware, Git-native, modular platform for teams who need infinitley
 
 ## DevOps Platform — CI/CD, Infrastructure & Monitoring
 
+### Services & Tools Overview
+
+#### GitHub Services
+
+| Service | What For | Component |
+|---------|----------|-----------|
+| **GitHub Actions** (ci.yaml, cd.yaml) | Build, test, version, release, deploy pipelines | CI/CD |
+| **GitHub Releases** | Version tagging & release management | CI/CD |
+| **GitHub Artifacts** | Store/retrieve Terraform state between jobs | CI/CD |
+| **GitHub Environments** | Teardown approval gate (protection rules) | CI/CD |
+| **Docker Hub** | Container image registry (engine + CLI) | CI/CD |
+| **Slack Webhooks** | CI/CD failure/success notifications | Notifications |
+| **Jira API** | Auto-create bug tickets on pipeline failure | Notifications |
+
+#### AWS Services
+
+| Service | What For | Component |
+|---------|----------|-----------|
+| **EC2** | Compute for K8s nodes (t3.small) | Infrastructure |
+| **EKS** | Managed Kubernetes cluster (v1.31) | Infrastructure |
+| **VPC** | Network isolation (10.0.0.0/16, 2 subnets, 2 AZs) | Infrastructure |
+| **Internet Gateway** | Public internet access for VPC | Infrastructure |
+| **EBS + CSI Driver** | Persistent storage for engine logs (gp3) | Infrastructure |
+| **IAM + OIDC/IRSA** | Roles for EKS, nodes, pod-level permissions | Infrastructure |
+| **NLB** (via nginx ingress) | Network Load Balancer for external traffic | Infrastructure |
+
+#### Tools
+
+| Tool | What For | Component |
+|------|----------|-----------|
+| **Terraform** (v1.7.5) | Provision all AWS resources | IaC |
+| **Ansible** | Node configuration & manifest deployment | IaC |
+| **Prometheus** (v2.51.0) | Metrics collection & storage | Monitoring |
+| **Grafana** (v10.4.1) | Metrics visualization & dashboards | Monitoring |
+| **nginx ingress controller** (v1.11.3) | Route external traffic into cluster | Networking |
+
 ### Repository Structure
 
 ```
