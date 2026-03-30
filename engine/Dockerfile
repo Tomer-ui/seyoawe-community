@@ -17,16 +17,15 @@ WORKDIR /app
 COPY seyoawe.linux ./seyoawe.linux
 RUN chmod +x ./seyoawe.linux
 
-# config.yaml expects paths relative to CWD (/app):
-#   directories.modules   = ./seyoawe-community/modules
-#   directories.workflows = ./seyoawe-community/workflows
-#   directories.logs      = ./seyoawe-community/logs
-#   directories.lifetimes = ./seyoawe-community/lifetimes
-# Copy into that layout and pre-create the writable directories.
-COPY modules/ ./seyoawe-community/modules/
+# config.yaml paths are relative to CWD (/app):
+#   directories.modules   = ./modules
+#   directories.workflows = ./workflows
+#   directories.logs      = ./logs
+#   directories.lifetimes = ./lifetimes
+COPY modules/ ./modules/
 COPY configuration/config.yaml ./configuration/config.yaml
-COPY workflows/ ./seyoawe-community/workflows/
-RUN mkdir -p ./seyoawe-community/logs ./seyoawe-community/lifetimes
+COPY workflows/ ./workflows/
+RUN mkdir -p ./logs ./lifetimes
 
 # Engine runs on port 8080 (defined in configuration/config.yaml)
 EXPOSE 8080
