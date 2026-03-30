@@ -3,11 +3,11 @@
     format: "[%(asctime)s] [%(levelname)s] [%(name)s:%(lineno)d] - %(message)s"
     
   directories:
-    workdir: ./seyoawe-community
-    modules: ./seyoawe-community/modules
-    workflows: ./seyoawe-community/workflows
-    lifetimes: ./seyoawe-community/lifetimes
-    logs: ./seyoawe-community/logs
+    workdir: .
+    modules: ./modules
+    workflows: ./workflows
+    lifetimes: ./lifetimes
+    logs: ./logs
 
   app:
     port: 8080
@@ -21,7 +21,7 @@
     port: 8081
     url: http://localhost:8081/poll
     md5_strict: false
-    customer_id: community
+    customer_id: default
     secret_key: community
     modules_repo: https://github.com/yuribernstein/seyoawe-community.git
     modules_repo_access_key: ""

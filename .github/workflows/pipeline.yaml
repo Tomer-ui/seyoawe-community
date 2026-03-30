@@ -1,0 +1,551 @@
+name: Pipeline
+
+# Single unified pipeline: Build → Test → Release → Deploy → Destroy
+# Mirrors a classic Jenkins-style linear pipeline. Each stage is a GitHub
+# Actions job chained via `needs:` — if any stage fails, everything
+# downstream is skipped and Post Actions fires notifications.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Stage 1 — Build
+  # Build both Docker images and push to the registry with a ci-<sha> tag.
+  # Downstream stages pull these exact images — nothing is ever rebuilt.
+  # ═══════════════════════════════════════════════════════════════════════════
+  build:
+    name: "Build"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build engine image
+        run: docker build -t seyoawe-engine:ci -f engine/Dockerfile .
+
+      - name: Build CLI image
+        run: docker build -t seyoawe-cli:ci -f cli/Dockerfile .
+
+      - name: Verify CLI image runs
+        run: docker run --rm seyoawe-cli:ci --help
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push images to registry
+        env:
+          ENGINE_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/seyoawe-engine
+          CLI_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/seyoawe-cli
+          SHA: ${{ github.sha }}
+        run: |
+          docker tag seyoawe-engine:ci "$ENGINE_REPO:ci-${SHA:0:7}"
+          docker tag seyoawe-cli:ci "$CLI_REPO:ci-${SHA:0:7}"
+          docker push "$ENGINE_REPO:ci-${SHA:0:7}"
+          docker push "$CLI_REPO:ci-${SHA:0:7}"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Stage 2 — Unit Tests
+  # Fast, no containers needed. Tests both engine and CLI source code.
+  # ═══════════════════════════════════════════════════════════════════════════
+  unit-tests:
+    name: "Unit Tests"
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install engine test dependencies
+        run: pip install -r tests/engine/requirements.txt
+
+      - name: Run engine unit tests
+        run: pytest tests/engine/unit/ -v
+
+      - name: Install sawectl runtime dependencies
+        run: pip install -r sawectl/requirements.txt
+
+      - name: Install CLI test dependencies
+        run: pip install -r tests/cli/requirements.txt
+
+      - name: Run CLI unit tests
+        run: pytest tests/cli/unit/ -v
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Stage 3 — Integration Tests
+  # Pulls the tested engine image, starts a container, and runs integration
+  # tests for both engine and CLI against it.
+  # ═══════════════════════════════════════════════════════════════════════════
+  integration-tests:
+    name: "Integration Tests"
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Pull engine image
+        env:
+          ENGINE_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/seyoawe-engine
+          SHA: ${{ github.sha }}
+        run: |
+          docker pull "$ENGINE_REPO:ci-${SHA:0:7}"
+          docker tag "$ENGINE_REPO:ci-${SHA:0:7}" seyoawe-engine:ci
+
+      - name: Install engine test dependencies
+        run: pip install -r tests/engine/requirements.txt
+
+      - name: Start engine container
+        run: |
+          docker run -d --name engine -p 8080:8080 seyoawe-engine:ci
+          echo "Waiting for engine to be stable (3 consecutive responses)..."
+          CONSECUTIVE=0
+          for i in $(seq 1 60); do
+            STATUS=$(curl -s --max-time 2 -o /dev/null -w "%{http_code}" http://localhost:8080/poll || echo "000")
+            if [ "$STATUS" != "000" ]; then
+              CONSECUTIVE=$((CONSECUTIVE + 1))
+              echo "  response $CONSECUTIVE/3 (HTTP $STATUS)"
+              if [ "$CONSECUTIVE" -ge 3 ]; then
+                echo "Engine is stable"
+                break
+              fi
+            else
+              CONSECUTIVE=0
+              echo "  attempt $i — not ready yet..."
+            fi
+            sleep 1
+          done
+          if [ "$CONSECUTIVE" -lt 3 ]; then
+            echo "Engine did not stabilize within 60 seconds"
+            docker logs engine
+            exit 1
+          fi
+
+      - name: Run engine integration tests
+        env:
+          ENGINE_URL: http://localhost:8080
+        run: pytest tests/engine/integration/ -v
+
+      - name: Install sawectl runtime dependencies
+        run: pip install -r sawectl/requirements.txt
+
+      - name: Install CLI test dependencies
+        run: pip install -r tests/cli/requirements.txt
+
+      - name: Run CLI integration tests
+        run: pytest tests/cli/integration/ -v
+
+      - name: Stop engine container
+        if: always()
+        run: docker stop engine && docker rm engine || true
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Stage 4 — E2E Tests
+  # Full end-to-end tests for both engine and CLI against a running engine.
+  # ═══════════════════════════════════════════════════════════════════════════
+  e2e-tests:
+    name: "E2E Tests"
+    runs-on: ubuntu-latest
+    needs: integration-tests
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Pull engine image
+        env:
+          ENGINE_REPO: ${{ secrets.DOCKERHUB_USERNAME }}/seyoawe-engine
+          SHA: ${{ github.sha }}
+        run: |
+          docker pull "$ENGINE_REPO:ci-${SHA:0:7}"
+          docker tag "$ENGINE_REPO:ci-${SHA:0:7}" seyoawe-engine:ci
+
+      - name: Install engine test dependencies
+        run: pip install -r tests/engine/requirements.txt
+
+      - name: Install sawectl runtime dependencies
+        run: pip install -r sawectl/requirements.txt
+
+      - name: Install CLI test dependencies
+        run: pip install -r tests/cli/requirements.txt
+
+      - name: Start engine container
+        run: |
+          docker run -d --name engine -p 8080:8080 seyoawe-engine:ci
+          echo "Waiting for engine to be stable (3 consecutive responses)..."
+          CONSECUTIVE=0
+          for i in $(seq 1 60); do
+            STATUS=$(curl -s --max-time 2 -o /dev/null -w "%{http_code}" http://localhost:8080/poll || echo "000")
+            if [ "$STATUS" != "000" ]; then
+              CONSECUTIVE=$((CONSECUTIVE + 1))
+              echo "  response $CONSECUTIVE/3 (HTTP $STATUS)"
+              if [ "$CONSECUTIVE" -ge 3 ]; then
+                echo "Engine is stable"
+                break
+              fi
+            else
+              CONSECUTIVE=0
+              echo "  attempt $i — not ready yet..."
+            fi
+            sleep 1
+          done
+          if [ "$CONSECUTIVE" -lt 3 ]; then
+            echo "Engine did not stabilize within 60 seconds"
+            docker logs engine
+            exit 1
+          fi
+
+      - name: Run engine E2E tests
+        env:
+          ENGINE_URL: http://localhost:8080
+        run: pytest tests/engine/e2e/ -v
+
+      - name: Run CLI E2E tests
+        run: pytest tests/cli/e2e/ -v
+
+      - name: Stop engine container
+        if: always()
+        run: docker stop engine && docker rm engine || true
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Stage 5 — Build & Release
+  # Runs only on main after all tests pass. Promotes the SAME tested images
+  # by re-tagging them with the semantic version — no rebuild.
+  # ═══════════════════════════════════════════════════════════════════════════
+  release:
+    name: "Build & Release"
+    runs-on: ubuntu-latest
+    needs: e2e-tests
+    if: success() && github.ref == 'refs/heads/main'
+    outputs:
+      version: ${{ steps.version.outputs.tag }}
+    permissions:
+      contents: write
+      actions: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute next semantic version
+        id: version
+        run: |
+          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "Latest tag: $LATEST"
+          MAJOR=$(echo "$LATEST" | sed 's/v//' | cut -d. -f1)
+          MINOR=$(echo "$LATEST" | sed 's/v//' | cut -d. -f2)
+          PATCH=$(echo "$LATEST" | sed 's/v//' | cut -d. -f3)
+          PATCH=$((PATCH + 1))
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "New version: $NEW_TAG"
+          echo "tag=$NEW_TAG" >> $GITHUB_OUTPUT
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Pull the SAME images that passed all tests — no rebuild
+      - name: Promote engine image
+        env:
+          REPO: ${{ secrets.DOCKERHUB_USERNAME }}/seyoawe-engine
+          SHA: ${{ github.sha }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          docker pull "$REPO:ci-${SHA:0:7}"
+          docker tag "$REPO:ci-${SHA:0:7}" "$REPO:$TAG"
+          docker tag "$REPO:ci-${SHA:0:7}" "$REPO:latest"
+          docker push "$REPO:$TAG"
+          docker push "$REPO:latest"
+
+      - name: Promote CLI image
+        env:
+          REPO: ${{ secrets.DOCKERHUB_USERNAME }}/seyoawe-cli
+          SHA: ${{ github.sha }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          docker pull "$REPO:ci-${SHA:0:7}"
+          docker tag "$REPO:ci-${SHA:0:7}" "$REPO:$TAG"
+          docker tag "$REPO:ci-${SHA:0:7}" "$REPO:latest"
+          docker push "$REPO:$TAG"
+          docker push "$REPO:latest"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "$TAG" \
+            --title "Release $TAG" \
+            --notes "Automated release $TAG. Engine and CLI images pushed to Docker Hub." \
+            --latest
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Stage 6 — Deploy
+  # Terraform provisions the infrastructure, Ansible configures nodes and
+  # deploys K8s manifests.
+  # ═══════════════════════════════════════════════════════════════════════════
+  deploy:
+    name: "Deploy"
+    runs-on: ubuntu-latest
+    needs: release
+
+    env:
+      AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION:    ${{ secrets.AWS_DEFAULT_REGION }}
+      DOCKERHUB_USERNAME:    ${{ secrets.DOCKERHUB_USERNAME }}
+      VERSION:               ${{ needs.release.outputs.version }}
+      TF_IN_AUTOMATION:      "1"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Install Ansible
+        run: pip install ansible
+
+      - name: Terraform init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Terraform plan
+        working-directory: terraform
+        run: terraform plan -out=tfplan
+
+      - name: Terraform apply
+        working-directory: terraform
+        run: terraform apply -auto-approve tfplan
+
+      - name: Configure EKS cluster nodes
+        working-directory: ansible
+        run: ansible-playbook playbooks/configure-nodes.yaml
+
+      - name: Deploy manifests to EKS
+        working-directory: ansible
+        run: ansible-playbook playbooks/deploy-manifests.yaml
+
+      - name: Upload terraform state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfstate
+          path: terraform/terraform.tfstate
+          retention-days: 1
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Stage 7 — Teardown Gate
+  # Manual approval button (GitHub Environment protection rule). Pauses so
+  # the live cluster can be inspected before destruction.
+  # ═══════════════════════════════════════════════════════════════════════════
+  teardown-gate:
+    name: "Teardown Gate"
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: needs.deploy.result == 'success'
+    environment: teardown
+
+    steps:
+      - name: Approved — proceeding to destroy
+        run: echo "Teardown approved. Destroy job will now run."
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Stage 8 — Destroy
+  # Cleans up all cloud resources. Runs automatically if deploy failed (no
+  # approval needed) or after teardown-gate approval if deploy succeeded.
+  # ═══════════════════════════════════════════════════════════════════════════
+  destroy:
+    name: "Destroy"
+    runs-on: ubuntu-latest
+    needs: [deploy, teardown-gate]
+    if: |
+      always() &&
+      needs.deploy.result != 'skipped' &&
+      (
+        needs.teardown-gate.result == 'success' ||
+        needs.deploy.result == 'failure'
+      )
+
+    env:
+      AWS_ACCESS_KEY_ID:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION:    ${{ secrets.AWS_DEFAULT_REGION }}
+      TF_IN_AUTOMATION:      "1"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.7.5"
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Download terraform state
+        uses: actions/download-artifact@v4
+        with:
+          name: tfstate
+          path: terraform/
+
+      - name: Terraform init
+        working-directory: terraform
+        run: terraform init
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig \
+            --region "$AWS_DEFAULT_REGION" \
+            --name seyoawe-cluster || true
+
+      - name: Delete nginx ingress controller and wait for NLB to be deleted
+        working-directory: terraform
+        run: |
+          kubectl delete namespace ingress-nginx --ignore-not-found || true
+          kubectl delete namespace monitoring --ignore-not-found || true
+
+          VPC_ID=$(terraform output -raw vpc_id 2>/dev/null || echo "")
+          if [ -n "$VPC_ID" ]; then
+            echo "Looking for load balancers in VPC $VPC_ID..."
+            LB_ARNS=$(aws elbv2 describe-load-balancers \
+              --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" \
+              --output text 2>/dev/null || echo "")
+
+            if [ -n "$LB_ARNS" ] && [ "$LB_ARNS" != "None" ]; then
+              for ARN in $LB_ARNS; do
+                echo "Waiting for load balancer to be deleted: $ARN"
+                aws elbv2 wait load-balancer-deleted --load-balancer-arns "$ARN" \
+                  || echo "  Wait timed out for $ARN — proceeding anyway"
+              done
+            else
+              echo "No load balancers found in VPC $VPC_ID"
+            fi
+          fi
+
+      - name: Terraform destroy
+        working-directory: terraform
+        run: terraform destroy -auto-approve
+
+      - name: Delete tfstate artifact
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ARTIFACT_ID=$(gh api repos/${{ github.repository }}/actions/artifacts \
+            --jq '.artifacts[] | select(.name=="tfstate" and .expired==false) | .id' \
+            | head -1)
+          if [ -n "$ARTIFACT_ID" ]; then
+            gh api --method DELETE repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID
+            echo "Artifact $ARTIFACT_ID deleted"
+          else
+            echo "No tfstate artifact found"
+          fi
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # Stage 9 — Post Actions
+  # Always runs at the end. Sends Slack notifications and creates Jira
+  # tickets on failure — mirrors the Jenkins "Post Actions" stage.
+  # ═══════════════════════════════════════════════════════════════════════════
+  post-actions:
+    name: "Post Actions"
+    runs-on: ubuntu-latest
+    needs: [build, unit-tests, integration-tests, e2e-tests, release, deploy, destroy]
+    if: always()
+
+    steps:
+      - name: Notify Slack — pipeline succeeded
+        if: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg text "✅ *Pipeline succeeded*  branch: \`${BRANCH}\`  commit: \`${SHA:0:7}\`\nRun: ${RUN_URL}" \
+            '{"blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": $text}}]}')
+          curl -sf -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
+
+      - name: Notify Slack — pipeline failed
+        if: contains(needs.*.result, 'failure')
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg text "❌ *Pipeline failed*  branch: \`${BRANCH}\`  commit: \`${SHA:0:7}\`\nRun: ${RUN_URL}" \
+            '{"blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": $text}}]}')
+          curl -sf -X POST -H 'Content-type: application/json' --data "$PAYLOAD" "$SLACK_WEBHOOK_URL"
+
+      - name: Create Jira bug — pipeline failure
+        if: contains(needs.*.result, 'failure')
+        env:
+          JIRA_API_TOKEN:   ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_USER_EMAIL:  ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_BASE_URL:    ${{ secrets.JIRA_BASE_URL }}
+          JIRA_PROJECT_KEY: ${{ secrets.JIRA_PROJECT_KEY }}
+          BRANCH: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg project "$JIRA_PROJECT_KEY" \
+            --arg summary "Pipeline failure on ${BRANCH} (${SHA:0:7})" \
+            --arg description "Pipeline failed.\n\nBranch: ${BRANCH}\nCommit: ${SHA}\nRun: ${RUN_URL}" \
+            '{
+              "fields": {
+                "project": {"key": $project},
+                "summary": $summary,
+                "description": {
+                  "type": "doc",
+                  "version": 1,
+                  "content": [{
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": $description}]
+                  }]
+                },
+                "issuetype": {"name": "Bug"}
+              }
+            }')
+          AUTH=$(echo -n "${JIRA_USER_EMAIL}:${JIRA_API_TOKEN}" | base64 -w0)
+          curl -sf -X POST \
+            -H "Authorization: Basic ${AUTH}" \
+            -H "Content-Type: application/json" \
+            --data "$PAYLOAD" \
+            "${JIRA_BASE_URL}/rest/api/3/issue"

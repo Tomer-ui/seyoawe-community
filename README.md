@@ -26,28 +26,36 @@ Define powerful, reliable workflows in YAML — with built-in support for approv
 
 ### ✅ Requirements
 
-`eninge`: none
+**Engine:** no dependencies (pre-compiled binary)
 
-`sawectl`:
-  `binary`: none
-  `python script`:
-    - Python 3.10+
+**sawectl:**
+- As a binary: no dependencies
+- As a Python script: Python 3.10+
 
-
-### 🚀 Running SeyoAWE (Local Engine)
+### 🚀 Setup
 
 ```bash
+# 1. Set up the sawectl alias (once per shell)
+alias sawectl="$PWD/sawectl/binaries/linux/sawectl"   # Linux
+# alias sawectl="$PWD/sawectl/binaries/macos.arm/sawectl"   # Apple Silicon
+
+# 2. Link webform assets (once after cloning)
+cd modules/webform && ./link_assets.sh && cd ../..
+
+# 3. Start the engine (from the repo root)
 ./run.sh linux   # or ./run.sh macos
 ```
 
-This launches the Flask-powered SeyoAWE runtime at `http://localhost:8080`.
+This launches the SeyoAWE engine at `http://localhost:8080` and the webform asset server at `http://localhost:9000`.
 
-Your `configurations/config.yaml` should point to:
+The `configuration/config.yaml` is pre-configured with paths relative to the repo root:
 ```yaml
 directories:
-  workdir: /path/to/seyoawe-execution-plane
-  modules: /path/to/seyoawe/modules
-  workflows: /path/to/seyoawe/workflows
+  workdir: .
+  modules: ./modules
+  workflows: ./workflows
+  lifetimes: ./lifetimes
+  logs: ./logs
 ```
 
 ---
@@ -55,32 +63,36 @@ directories:
 ## 🧬 Writing Your First Workflow
 
 ```bash
-sawectl workflow init hello-world
+sawectl init workflow hello-world
 ```
 
-Creates a scaffold in `workflows/hello-world.yaml`.
+Creates a scaffold in `workflows/default/hello-world.yaml`.
 
 ### 🧾 Example Workflow
 
 ```yaml
-name: hello-world
-trigger:
-  type: ad-hoc
+workflow:
+  name: hello-world
+  trigger:
+    type: ad-hoc
 
-context_variables:
-  name: "Yura"
+  context_variables:
+    - name: greeting
+      type: string
+      default: "Hello from SeyoAWE!"
 
-steps:
-  - id: greet
-    module: slack
-    config:
-      message: "Hello, {{ context.name }}! Welcome to SeyoAWE."
+  steps:
+    - id: greet
+      type: action
+      action: command_module.Command.run
+      input:
+        command: "echo '{{ context.greeting }}'"
 ```
 
 ### 💡 Run it
 
 ```bash
-sawectl run workflows/hello-world.yaml
+sawectl run --workflow workflows/default/hello-world.yaml --server localhost:8080
 ```
 
 ---
@@ -92,11 +104,11 @@ The official CLI tool to manage, validate, and run workflows.
 ### 🔑 Common Commands
 
 ```bash
-sawectl run <path.yaml>             # Run ad-hoc workflow
-sawectl validate-workflow <wf.yaml> # Deep schema + module validation
-sawectl list-modules                # View installed modules
-sawectl workflow init <name>        # Scaffold a new workflow
-sawectl module create <name>        # Scaffold a custom module
+sawectl run --workflow <path.yaml> --server localhost:8080   # Run ad-hoc workflow
+sawectl validate-workflow --workflow <wf.yaml>               # Deep schema + module validation
+sawectl validate-modules                                     # Validate all module manifests
+sawectl init workflow <name>                                 # Scaffold a new workflow
+sawectl init module <name>                                   # Scaffold a custom module
 ```
 
 ---
@@ -118,21 +130,23 @@ Modules are plug-and-play Python classes with full control.
 
 ### 📦 Built-In Modules
 
-| Module     | Description                                         |
-|------------|-----------------------------------------------------|
-| `webform`  | React-based approval form renderer                  |
-| `slack`    | Sends messages and links via Slack                  |
-| `email`    | Sends rich email notifications or approval requests |
-| `api`      | Makes dynamic REST API calls                        |
-| `git`      | GitOps actions: branches, commits, PRs              |
-| `chatbot`  | Interacts with users using LLMs (OpenAI, Mistral)   |
+| Module             | Description                                         |
+|--------------------|-----------------------------------------------------|
+| `command_module`   | Execute shell commands                              |
+| `webform`          | React-based approval form renderer                  |
+| `slack_module`     | Sends messages and links via Slack                  |
+| `email_module`     | Sends rich email notifications or approval requests |
+| `api_module`       | Makes dynamic REST API calls                        |
+| `git_module`       | GitOps actions: branches, commits, PRs              |
+| `chatbot_module`   | Interacts with users using LLMs (OpenAI, Mistral)   |
+| `logger`           | Simple logging module for workflow messages          |
 
 ---
 
 ### 🧑‍🔧 Build Your Own Module
 
 ```bash
-sawectl module create mymodule
+sawectl init module mymodule
 ```
 
 Creates:
@@ -218,6 +232,81 @@ Crash? Restart the engine — it will resume in-place.
 Involve human review(s) at any stage !
 ---
 
+## 🔌 Communicating with SeyoAWE
+
+There are three ways to interact with a running SeyoAWE engine:
+
+### 1. sawectl CLI
+
+The primary interface for workflow management and execution.
+
+```bash
+# Set up the alias (once per shell)
+alias sawectl="$PWD/sawectl/binaries/linux/sawectl"
+
+# Validate a workflow
+sawectl validate-workflow --workflow workflows/default/hello-world.yaml
+
+# Run a workflow against the engine
+sawectl run --workflow workflows/default/hello-world.yaml --server localhost:8080
+
+# Scaffold a new module and workflow
+sawectl init module mymodule
+sawectl init workflow my_flow --full --modules mymodule --trigger api
+```
+
+### 2. REST API
+
+The engine exposes HTTP endpoints for triggering workflows programmatically.
+Workflows with `trigger.type: api` register routes automatically at startup.
+
+```bash
+# Trigger a workflow via curl
+curl -X POST http://localhost:8080/api/default/hello-world
+
+# Trigger with a JSON payload (parsed by payload_parser in the workflow)
+curl -X POST http://localhost:8080/api/default/employee_onboarding \
+  -H "Content-Type: application/json" \
+  -d '{"employee_name": "Jane", "role": "Engineer"}'
+
+# Check engine health
+curl http://localhost:8080/poll
+```
+
+The URL pattern is: `POST /api/<customer_id>/<workflow_name>`
+where `customer_id` is set in `configuration/config.yaml` (default: `default`)
+and `workflow_name` matches the YAML filename under `workflows/<customer_id>/`.
+
+### 3. Webform UI
+
+For human-in-the-loop workflows, the engine serves interactive web forms.
+
+When a workflow reaches a `type: webform` step, it generates a **one-time approval link**:
+```
+http://localhost:8080/webform/<workflow_uid>/<step_id>/t.webform.html?config_file=<config>.js
+```
+
+This link is typically delivered via Slack or email (configured in the workflow's `delivery_step`).
+The form collects user input and posts it back to the engine, which resumes the workflow
+with the submitted data available at `context.<step_id>.status.form_data`.
+
+The webform asset server runs on port **9000** (started automatically by `run.sh`).
+To verify it's working:
+```bash
+curl -s -o /dev/null -w '%{http_code}' http://localhost:9000/webform_bundle.js
+# Should return 200
+```
+
+### Quick Reference
+
+| Method | When to Use | Example |
+|--------|-------------|---------|
+| **sawectl CLI** | Ad-hoc runs, validation, scaffolding | `sawectl run --workflow ... --server localhost:8080` |
+| **REST API** | Automated triggers, webhooks, CI/CD integration | `curl -X POST http://localhost:8080/api/default/<wf>` |
+| **Webform UI** | Human approvals, data collection forms | Delivered via Slack/email link, opened in browser |
+
+---
+
 ## 📜 License
 
 SeyoAWE is dual-licensed:
@@ -256,7 +345,7 @@ It’s a human-aware, Git-native, modular platform for teams who need infinitley
 
 | Service | What For | Component |
 |---------|----------|-----------|
-| **GitHub Actions** (ci.yaml, cd.yaml) | Build, test, version, release, deploy pipelines | CI/CD |
+| **GitHub Actions** (pipeline.yaml) | Unified pipeline: build, test, release, deploy | CI/CD |
 | **GitHub Releases** | Version tagging & release management | CI/CD |
 | **GitHub Artifacts** | Store/retrieve Terraform state between jobs | CI/CD |
 | **GitHub Environments** | Teardown approval gate (protection rules) | CI/CD |
@@ -290,8 +379,7 @@ It’s a human-aware, Git-native, modular platform for teams who need infinitley
 
 ```
 .github/workflows/
-  ci.yaml              # CI: build, test, version, push to Docker Hub
-  cd.yaml              # CD: Terraform → Ansible → K8s deploy → destroy
+  pipeline.yaml         # Unified pipeline: Build → Test → Release → Deploy → Destroy
 engine/Dockerfile       # Engine container (ubuntu:22.04 + seyoawe.linux binary)
 cli/Dockerfile          # CLI container (python:3.11-slim + sawectl.py)
 tests/
@@ -306,24 +394,25 @@ k8s/                   # Engine StatefulSet, CLI Deployment, Services, Ingress
 monitoring/            # Prometheus + Grafana on dedicated monitoring node
 ```
 
-### CI Pipeline (ci.yaml)
+### Pipeline (pipeline.yaml)
 
-Triggered on every push. Two parallel jobs:
+A single unified pipeline triggered on every push, with sequential stages:
 
-1. **engine-ci** — build Docker image, run unit tests, start container, run integration + e2e tests
-2. **cli-ci** — build Docker image, run unit + integration tests, start engine, run e2e tests
+```
+Build → Unit Tests → Integration Tests → E2E Tests → Build & Release → Deploy → Teardown Gate → Destroy → Post Actions
+```
 
-If either fails: Slack notification + Jira bug ticket created automatically.
+1. **Build** — builds both Docker images (engine + CLI) and pushes them to Docker Hub with a `ci-<sha>` tag
+2. **Unit Tests** — runs engine and CLI unit tests
+3. **Integration Tests** — pulls the tested engine image, starts a container, runs integration tests for both components
+4. **E2E Tests** — full end-to-end tests against a running engine container
+5. **Build & Release** *(main branch only)* — promotes the tested images by re-tagging with the semantic version (no rebuild), creates a GitHub Release
+6. **Deploy** — `terraform apply` → `ansible-playbook configure-nodes` → `ansible-playbook deploy-manifests`
+7. **Teardown Gate** — manual approval button (GitHub Environment protection rule)
+8. **Destroy** — cleans up ingress + monitoring namespaces then `terraform destroy`. Runs automatically on deploy failure (no approval needed)
+9. **Post Actions** — always runs: Slack notification + Jira bug ticket on failure
 
-If both pass: **version-and-release** job bumps the semantic version, pushes both images to Docker Hub with matching tags, creates a GitHub Release, and triggers the CD pipeline.
-
-### CD Pipeline (cd.yaml)
-
-Three-job structure:
-
-1. **deploy** — `terraform apply` (VPC + EKS + monitoring node) then `ansible-playbook configure-nodes` then `ansible-playbook deploy-manifests` (app + monitoring)
-2. **teardown-gate** — manual approval button (GitHub Environment protection rule). Pauses so the live cluster can be inspected before destruction.
-3. **destroy** — cleans up ingress + monitoring namespaces then `terraform destroy`. Runs automatically on deploy failure (no approval needed).
+If any stage fails, all downstream stages are skipped and Post Actions handles notifications.
 
 ### Infrastructure (Terraform)
 
@@ -345,7 +434,7 @@ External access via nginx ingress controller (AWS NLB).
 
 ### Monitoring
 
-Prometheus scrapes container CPU/memory/network metrics from all nodes via cAdvisor. Grafana boots with a pre-provisioned "Seyoawe Cluster Overview" dashboard — no manual setup required.
+Prometheus scrapes container CPU/memory/network metrics from all nodes via cAdvisor. Grafana boots with community dashboard [18283](https://grafana.com/grafana/dashboards/18283) ("Kubernetes cluster monitoring via Prometheus"), downloaded automatically at pod startup by an init container — no manual import required.
 
 ### GitHub Secrets Required
 

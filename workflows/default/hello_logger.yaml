@@ -1,0 +1,29 @@
+workflow:
+  name: hello_logger
+  description: "Demonstrates the logger module — logs a greeting and a follow-up message."
+
+  trigger:
+    type: ad-hoc
+
+  context_variables:
+    - name: user_name
+      type: string
+      default: "World"
+      description: "Name to include in the greeting."
+
+  steps:
+    - id: greet
+      type: action
+      description: "Log a hello message."
+      action: logger.Logger.log
+      input:
+        message: "Hello, {{ context.user_name }}! Welcome to SeyoAWE."
+        level: info
+
+    - id: done
+      type: action
+      description: "Log a completion message."
+      action: logger.Logger.log
+      input:
+        message: "Workflow hello_logger finished successfully."
+        level: info

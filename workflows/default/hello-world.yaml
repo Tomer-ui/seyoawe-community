@@ -1,0 +1,20 @@
+workflow:
+  name: hello-world
+  description: "Minimal hello-world workflow — runs a shell command to greet the user."
+
+  trigger:
+    type: ad-hoc
+
+  context_variables:
+    - name: greeting
+      type: string
+      default: "Hello from SeyoAWE!"
+      description: "The greeting message to display."
+
+  steps:
+    - id: greet
+      type: action
+      description: "Echo a greeting via the command module."
+      action: command_module.Command.run
+      input:
+        command: "echo '{{ context.greeting }}'"

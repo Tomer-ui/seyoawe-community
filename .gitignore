@@ -187,6 +187,10 @@ images_slides/
 tasks/
 progress_logs/
 
+# Engine runtime data (keep dirs via .gitkeep, ignore contents)
+lifetimes/*.json
+logs/*.log
+
 # Terraform
 .terraform/
 .terraform.lock.hcl

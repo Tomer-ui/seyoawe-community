@@ -1,0 +1,19 @@
+name: logger
+class: Logger
+version: "1.0"
+author: community
+entrypoint: logger.py
+description: Simple logging module — writes messages to the workflow log.
+
+methods:
+  - name: log
+    description: "Log a message at the specified level."
+    arguments:
+      - name: message
+        type: string
+        required: true
+        description: "The message to log."
+      - name: level
+        type: string
+        required: false
+        description: "Log level: info, warning, error. Defaults to info."
