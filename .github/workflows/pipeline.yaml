@@ -304,6 +304,26 @@ jobs:
             --notes "Automated release $TAG. Engine and CLI images pushed to Docker Hub." \
             --latest
 
+      # Clean up the temporary ci-<sha> tags now that images are promoted
+      - name: Delete CI tags from Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          CI_TAG="ci-${SHA:0:7}"
+          TOKEN=$(curl -s -X POST "https://hub.docker.com/v2/users/login/" \
+            -H "Content-Type: application/json" \
+            -d "{\"username\":\"${DOCKERHUB_USERNAME}\",\"password\":\"${DOCKERHUB_TOKEN}\"}" \
+            | jq -r .token)
+          for REPO in seyoawe-engine seyoawe-cli; do
+            curl -sf -X DELETE \
+              -H "Authorization: JWT ${TOKEN}" \
+              "https://hub.docker.com/v2/repositories/${DOCKERHUB_USERNAME}/${REPO}/tags/${CI_TAG}/" \
+              && echo "Deleted ${REPO}:${CI_TAG}" \
+              || echo "Could not delete ${REPO}:${CI_TAG} — skipping"
+          done
+
   # ═══════════════════════════════════════════════════════════════════════════
   # Stage 6 — Deploy
   # Terraform provisions the infrastructure, Ansible configures nodes and

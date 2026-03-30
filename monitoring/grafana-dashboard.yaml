@@ -1,10 +1,15 @@
 # Grafana community dashboard 18283 — "Kubernetes cluster monitoring (via Prometheus)"
 # Downloaded at boot time by the Grafana deployment's init container.
-# This ConfigMap is no longer used for dashboard data; the init container
-# fetches the latest revision directly from grafana.com and writes it to
-# an emptyDir volume shared with the Grafana container.
-#
-# Kept as a reference placeholder. See grafana-deployment.yaml for the
-# init container that performs the download.
+# This ConfigMap is kept as a valid K8s object so the Ansible playbook
+# can apply it without errors. The actual dashboard JSON is fetched by
+# the init container at pod startup — see grafana-deployment.yaml.
 #
 # Dashboard: https://grafana.com/grafana/dashboards/18283
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard
+  namespace: monitoring
+  labels:
+    app: grafana
+    dashboard-source: grafana-com-18283
