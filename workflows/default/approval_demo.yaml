@@ -1,0 +1,43 @@
+workflow:
+  name: approval_demo
+  description: "Demonstrates the webform module — pauses for human approval via a browser form."
+
+  trigger:
+    type: ad-hoc
+
+  context_variables:
+    - name: requester
+      type: string
+      default: "demo-user"
+      description: "Who is requesting approval."
+
+  steps:
+    - id: log_start
+      type: action
+      description: "Log that the approval workflow has started."
+      action: logger.Logger.log
+      input:
+        message: "Approval workflow started by {{ context.requester }}."
+        level: info
+
+    - id: collect_approval
+      type: webform
+      module: webform
+      config_file: wf_config.js
+      css_file: custom.css
+      timeout_minutes: 30
+      delivery_step:
+        id: print_link
+        type: action
+        action: command_module.Command.run
+        input:
+          command: "echo 'Approval link: {{ context.approval_link }}'"
+      register_output: form_result
+
+    - id: log_result
+      type: action
+      description: "Log what the user decided."
+      action: logger.Logger.log
+      input:
+        message: "Approval form submitted. Data: {{ context.form_result.status.form_data }}"
+        level: info
