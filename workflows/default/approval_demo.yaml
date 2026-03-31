@@ -1,6 +1,6 @@
 workflow:
   name: approval_demo
-  description: "Demonstrates the webform module — pauses for human approval via a browser form."
+  description: "Demonstrates the webform module - pauses for human approval via a browser form."
 
   trigger:
     type: ad-hoc

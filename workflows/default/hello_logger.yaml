@@ -1,6 +1,6 @@
 workflow:
   name: hello_logger
-  description: "Demonstrates the logger module — logs a greeting and a follow-up message."
+  description: "Demonstrates the logger module - logs a greeting and a follow-up message."
 
   trigger:
     type: ad-hoc
