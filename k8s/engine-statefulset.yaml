@@ -24,7 +24,7 @@ spec:
 
           volumeMounts:
             - name: progress-logs
-              mountPath: /app/seyoawe-community/logs    # matches config.yaml directories.logs; persisted across pod restarts
+              mountPath: /app/logs    # matches config.yaml directories.logs; persisted across pod restarts
 
           # The engine has no HTTP endpoint that returns 200 when idle (/poll returns
           # 404 when there are no pending workflows). Use tcpSocket probes instead —
