@@ -12,14 +12,6 @@ workflow:
       description: "Who is requesting approval."
 
   steps:
-    - id: log_start
-      type: action
-      description: "Log that the approval workflow has started."
-      action: logger.Logger.log
-      input:
-        message: "Approval workflow started by {{ context.requester }}."
-        level: info
-
     - id: collect_approval
       type: webform
       module: webform
@@ -33,11 +25,3 @@ workflow:
         input:
           command: "echo 'Approval link: {{ context.approval_link }}'"
       register_output: form_result
-
-    - id: log_result
-      type: action
-      description: "Log what the user decided."
-      action: logger.Logger.log
-      input:
-        message: "Approval form submitted. Data: {{ context.form_result.status.form_data }}"
-        level: info
