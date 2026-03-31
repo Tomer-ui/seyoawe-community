@@ -1,6 +1,6 @@
 workflow:
   name: hello-world
-  description: "Minimal hello-world workflow — runs a shell command to greet the user."
+  description: "Minimal hello-world workflow - runs a shell command to greet the user."
 
   trigger:
     type: ad-hoc

@@ -3,7 +3,7 @@ class: Logger
 version: "1.0"
 author: community
 entrypoint: logger.py
-description: Simple logging module — writes messages to the workflow log.
+description: Simple logging module - writes messages to the workflow log.
 
 methods:
   - name: log
