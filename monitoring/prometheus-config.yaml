@@ -65,7 +65,23 @@ data:
             target_label: __metrics_path__
             replacement: /api/v1/nodes/${1}/proxy/metrics
 
-      # ── 4. Pod annotation-based discovery ───────────────────────────────
+      # ── 4. Node Exporter (node-level CPU, memory, disk, network) ────────
+      - job_name: "node-exporter"
+        kubernetes_sd_configs:
+          - role: endpoints
+            namespaces:
+              names: [monitoring]
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_service_name]
+            action: keep
+            regex: node-exporter
+
+      # ── 5. Kube-state-metrics ────────────────────────────────────────────
+      - job_name: "kube-state-metrics"
+        static_configs:
+          - targets: ["kube-state-metrics.kube-system.svc.cluster.local:8080"]
+
+      # ── 6. Pod annotation-based discovery ───────────────────────────────
       # Any pod with these annotations gets scraped automatically:
       #   prometheus.io/scrape: "true"
       #   prometheus.io/port: "8080"       (optional, defaults to pod port)
