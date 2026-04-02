@@ -3,7 +3,7 @@ workflow:
   description: "Demonstrates the logger module - logs a greeting and a follow-up message."
 
   trigger:
-    type: ad-hoc
+    type: adhoc
 
   context_variables:
     - name: user_name

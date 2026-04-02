@@ -3,7 +3,15 @@ workflow:
   description: "Demonstrates the webform module - pauses for human approval via a browser form."
 
   trigger:
-    type: ad-hoc
+    type: api
+
+  match:
+    conditions:
+      - path: payload.action
+        operator: equals
+        value: "run"
+        id: do_run
+    condition_logic: do_run
 
   context_variables:
     - name: requester

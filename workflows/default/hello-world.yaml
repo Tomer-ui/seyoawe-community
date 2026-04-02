@@ -3,7 +3,15 @@ workflow:
   description: "Minimal hello-world workflow - runs a shell command to greet the user."
 
   trigger:
-    type: ad-hoc
+    type: api
+
+  match:
+    conditions:
+      - path: payload.action
+        operator: equals
+        value: "run"
+        id: do_run
+    condition_logic: do_run
 
   context_variables:
     - name: greeting

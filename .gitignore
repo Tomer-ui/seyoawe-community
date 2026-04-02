@@ -189,7 +189,16 @@ progress_logs/
 
 # Engine runtime data (keep dirs via .gitkeep, ignore contents)
 lifetimes/*.json
+lifetimes/*.yaml
+lifetimes/completed/
 logs/*.log
+
+# Webform runtime dirs and symlinked assets
+webform/
+modules/webform/webform_bundle.js
+modules/webform/webform_bundle.css
+modules/webform/configs
+modules/webform/build/dist/webform/
 
 # Terraform
 .terraform/
