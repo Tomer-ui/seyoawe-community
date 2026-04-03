@@ -38,7 +38,9 @@ spec:
               curl -fsSL \
                 https://grafana.com/api/dashboards/18283/revisions/latest/download \
                 -o /tmp/raw.json
-              sed 's/${DS_PROMETHEUS}/Prometheus/g' /tmp/raw.json \
+              sed -e 's/${DS_PROMETHEUS}/Prometheus/g' \
+                  -e 's/${DS_SERVICEMONITOR}/Prometheus/g' \
+                  /tmp/raw.json \
                 | python3 -c "import sys,json; d=json.load(sys.stdin); d.pop('__inputs',None); d.pop('__requires',None); print(json.dumps(d))" \
                 > /dashboards/k8s-cluster.json
               echo "Dashboard 18283 downloaded and patched"
