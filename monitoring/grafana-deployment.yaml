@@ -38,8 +38,16 @@ spec:
                 https://grafana.com/api/dashboards/18283/revisions/latest/download \
                 -o /tmp/raw.json
               # Replace the datasource input variable with our Prometheus name
+              # Also remove __inputs and __requires blocks that cause Grafana 10
+              # legacy query upgrade errors when provisioned from file
               sed 's/${DS_PROMETHEUS}/Prometheus/g' /tmp/raw.json \
-                > /dashboards/k8s-cluster.json
+                | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+d.pop('__inputs', None)
+d.pop('__requires', None)
+print(json.dumps(d))
+" > /dashboards/k8s-cluster.json
               echo "Dashboard 18283 downloaded and patched"
           volumeMounts:
             - name: dashboards
